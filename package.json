@@ -1,0 +1,31 @@
+{
+  "name": "easy-call-js",
+  "version": "1.0.1",
+  "description": "makes it easy to add video calls easily and JavaScript-enabled, regardless of the framework",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "build": "tsc",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "webrtc",
+    "javascript",
+    "frontend",
+    "peer-to-peer"
+  ],
+  "author": "Yvan NGOUDJOU",
+  "license": "ISC",
+  "dependencies": {
+    "firebase": "^10.13.1",
+    "rxjs": "^7.8.1",
+    "tslib": "^2.8.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3"
+  }
+}
