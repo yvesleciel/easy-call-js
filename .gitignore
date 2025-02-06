@@ -1,0 +1,9 @@
+# Compiled output
+/dist
+
+
+.idea
+
+# Node
+/node_modules
+easy-call-js-1.0.0.tgz
