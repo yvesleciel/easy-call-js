@@ -3,11 +3,13 @@ import {FirebaseOptions, initializeApp} from "@firebase/app"
 import { getFirestore, Firestore, doc, setDoc, getDoc, addDoc, collection, updateDoc,
   arrayUnion, onSnapshot, deleteDoc, query, where } from "firebase/firestore";
 import {Observable} from "rxjs";
+import {Logger} from "../utils/logger";
 
 
 export class FirebaseCallProcess implements CallProcess {
   db: Firestore;
   hasAcquiredLock = false;
+  private readonly logger = Logger.getInstance(0);
   constructor(firebaseConfig:  FirebaseOptions) {
     const app = initializeApp(firebaseConfig);
     this.db = getFirestore(app);
@@ -69,6 +71,7 @@ export class FirebaseCallProcess implements CallProcess {
       if(!doc.exists() && !this.hasAcquiredLock){
         const success = await this.acquireLock(roomId, participantId)
         if (success) {
+          console.log('lock acquired !')
           try {
             action();
           } catch(error) {
@@ -96,12 +99,14 @@ export class FirebaseCallProcess implements CallProcess {
   }
 
   onReadOfferOrAnswerOrIce(path: string, idUser: string, participantId:string, type: RTCExchangeDataType, callBack: CallBack): Promise<RTCSessionDescriptionInit | any> {
+    this.logger.debug('onReadOfferOrAnswerOrIce', {path, idUser, participantId, type})
     return new Promise((resolve, reject) => {
       const typeRef = collection(this.db, "rooms", path, "sdp",type, idUser);
       const q = query(typeRef, where("issuer", "==", participantId));
       onSnapshot(q, (snapshot) => {
         snapshot.docChanges().forEach((change) => {
           if (change.type === "added") {
+            this.logger.debug('new answer added ...............')
             callBack.do(change.doc.data()![type]);
             resolve(change.doc.data()![type]);
           }
@@ -113,6 +118,11 @@ export class FirebaseCallProcess implements CallProcess {
   async releaseCall(callId: string, userId: string): Promise<void> {
     const typeRef = collection(this.db, "rooms", callId, "leave");
     await addDoc(typeRef, {userId: userId, timestamp: Date.now()});
+    const userCallRef = doc(this.db, "users", userId, "call", "callId");
+    await deleteDoc(userCallRef);
+  }
+
+  async rejectCall(userId: string): Promise<void> {
     const userCallRef = doc(this.db, "users", userId, "call", "callId");
     await deleteDoc(userCallRef);
   }

@@ -11,6 +11,7 @@ export interface CallProcess {
   getParticipantNotInCall(roomId: string): Promise<string[]>;
   releaseLock(roomId: string): void;
   releaseCall(callId: string, userId: string): Promise<void>;
+  rejectCall(userId: string): Promise<void>;
   onNewCall(userId: string):Promise<string>;
   onLeaveCall(callId: string): Observable<string>;
 }

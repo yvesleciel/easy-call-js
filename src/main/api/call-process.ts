@@ -12,7 +12,11 @@ export interface ICallProcessService {
 
     releaseCall(callId: string, userId: string): void;
 
+    rejectCall(userId: string): Promise<void>
+
     handleLeaveCall(callId: string): Observable<string>;
 
     removeParticipantVideo(userId: string): void;
+
+    cleanup(): Promise<void>
 }
