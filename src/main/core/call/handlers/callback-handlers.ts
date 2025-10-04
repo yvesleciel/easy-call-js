@@ -1,13 +1,13 @@
-import {CallBack, RTCExchangeDataType} from '../feature/CallProcess';
-import { IWebRTCService } from '../services/webrtc.service';
-import { Logger } from '../utils/logger';
+import {CallBack, RTCExchangeDataType} from '../driven/call-process-signaling';
+import { IWebRTCService } from '../driven/webrtc.service';
+import { Logger } from '../../../shared/utils/logger';
 
 export class AnswerHandler implements CallBack {
     private readonly logger = Logger.getInstance();
 
     constructor(
-        private connection: RTCPeerConnection,
-        private webRTCService: IWebRTCService
+        private readonly connection: RTCPeerConnection,
+        private readonly webRTCService: IWebRTCService
     ) {}
 
     async do(answer: RTCSessionDescriptionInit): Promise<void> {
@@ -46,12 +46,12 @@ export class OfferHandler implements CallBack {
     private readonly logger = Logger.getInstance();
 
     constructor(
-        private connection: RTCPeerConnection,
-        private webRTCService: IWebRTCService,
-        private callId: string,
-        private participantId: string,
-        private issuerId: string,
-        private callProcess: any
+        private readonly connection: RTCPeerConnection,
+        private readonly webRTCService: IWebRTCService,
+        private readonly callId: string,
+        private readonly participantId: string,
+        private readonly issuerId: string,
+        private readonly callProcess: any
     ) {}
 
     async do(offer: RTCSessionDescriptionInit): Promise<void> {

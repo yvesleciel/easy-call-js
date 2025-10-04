@@ -1,6 +1,6 @@
 import { BehaviorSubject, Observable } from 'rxjs';
-import { CallStateError } from '../errors/call-error';
-import { Logger } from '../utils/logger';
+import { CallStateError } from '../../../shared/errors/call-error';
+import { Logger } from '../../../shared/utils/logger';
 
 export enum CallState {
     IDLE = 'idle',

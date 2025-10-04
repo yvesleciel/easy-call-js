@@ -1,6 +1,6 @@
 import {Observable} from "rxjs";
 
-export interface CallProcess {
+export interface CallProcessSignaling {
   createCall(callIssuer: string, usersToCallId: string[]): Promise<string>;
   writeOfferOrAnswerOrIce(path: string, idUser: string, type: RTCExchangeDataType, element:any):void;
   onReadOfferOrAnswerOrIce(path: string, idUser: string, participantId: string,type: RTCExchangeDataType, callBack: CallBack):Promise<RTCSessionDescriptionInit | any>;
@@ -33,18 +33,4 @@ export interface CallBackAcquireLock {
 export interface PeerConnect{
   id: string,
   peer: RTCPeerConnection
-}
-
-export interface CallParam {
-  usersToCallId: string[],
-  callIssuerId: string,
-  videoSelector: string,
-  idContentForCall: string,
-}
-
-export interface TriggerCallParam {
-  callParam: CallParam,
-  callId: string,
-  localStream: MediaStream,
-  participantId: string
 }

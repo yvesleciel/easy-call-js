@@ -1,18 +1,7 @@
-
-import { WebRTCConnectionError } from '../errors/call-error';
-import { Logger } from '../utils/logger';
-import { RTCConfig, TimeoutConfig } from '../config/call-config';
-
-export interface IWebRTCService {
-    createConnection(participantId: string): Promise<RTCPeerConnection>;
-    createOffer(connection: RTCPeerConnection): Promise<RTCSessionDescriptionInit>;
-    createAnswer(connection: RTCPeerConnection): Promise<RTCSessionDescriptionInit>;
-    setRemoteDescription(connection: RTCPeerConnection, description: RTCSessionDescriptionInit): Promise<void>;
-    addIceCandidate(connection: RTCPeerConnection, candidate: RTCIceCandidateInit): Promise<void>;
-    addTrack(connection: RTCPeerConnection, track: MediaStreamTrack, stream: MediaStream): void;
-    cleanup(): void;
-    closeConnection(participantId: string): void;
-}
+import {Logger} from "../../shared/utils/logger";
+import {RTCConfig, TimeoutConfig} from "../../core/call/app-config/call-config";
+import {WebRTCConnectionError} from "../../shared/errors/call-error";
+import {IWebRTCService} from "../../core/call/driven/webrtc.service";
 
 export class WebRTCService implements IWebRTCService {
     private readonly logger = Logger.getInstance();
@@ -21,11 +10,12 @@ export class WebRTCService implements IWebRTCService {
     constructor(
         private rtcConfig: RTCConfig,
         private timeouts: TimeoutConfig
-    ) {}
+    ) {
+    }
 
     async createConnection(participantId: string): Promise<RTCPeerConnection> {
         try {
-            this.logger.debug('Creating WebRTC connection', { participantId });
+            this.logger.debug('Creating WebRTC connection', {participantId});
 
             const connection = new RTCPeerConnection(this.rtcConfig);
 
@@ -34,12 +24,12 @@ export class WebRTCService implements IWebRTCService {
 
             this.connections.set(participantId, connection);
 
-            this.logger.info('WebRTC connection created successfully', { participantId });
+            this.logger.info('WebRTC connection created successfully', {participantId});
             return connection;
 
         } catch (error) {
-            this.logger.error('Failed to create WebRTC connection', error as Error, { participantId });
-            throw new WebRTCConnectionError(`Failed to create connection for ${participantId}`, { participantId });
+            this.logger.error('Failed to create WebRTC connection', error as Error, {participantId});
+            throw new WebRTCConnectionError(`Failed to create connection for ${participantId}`, {participantId});
         }
     }
 
@@ -47,7 +37,7 @@ export class WebRTCService implements IWebRTCService {
         try {
             this.logger.debug('Creating WebRTC offer');
 
-            const offer: RTCSessionDescriptionInit  = await Promise.race([
+            const offer: RTCSessionDescriptionInit = await Promise.race([
                 connection.createOffer(),
                 this.createTimeoutPromise<never>('Create offer timed out')
             ]);
@@ -85,14 +75,14 @@ export class WebRTCService implements IWebRTCService {
 
     async setRemoteDescription(connection: RTCPeerConnection, description: RTCSessionDescriptionInit): Promise<void> {
         try {
-            this.logger.debug('Setting remote description', { type: description.type });
+            this.logger.debug('Setting remote description', {type: description.type});
 
             await Promise.race([
                 connection.setRemoteDescription(description),
                 this.createTimeoutPromise('Set remote description timed out')
             ]);
 
-            this.logger.info('Remote description set successfully', { type: description.type });
+            this.logger.info('Remote description set successfully', {type: description.type});
 
         } catch (error) {
             this.logger.error('Failed to set remote description', error as Error);
@@ -113,37 +103,37 @@ export class WebRTCService implements IWebRTCService {
 
         } catch (error) {
             // Les erreurs ICE peuvent être non-critiques
-            this.logger.warn('Failed to add ICE candidate', { error: (error as Error).message });
+            this.logger.warn('Failed to add ICE candidate', {error: (error as Error).message});
         }
     }
 
     async addTrack(connection: RTCPeerConnection, track: MediaStreamTrack, stream: MediaStream): Promise<void> {
         try {
-            this.logger.debug('Adding track to connection', { trackKind: track.kind });
+            this.logger.debug('Adding track to connection', {trackKind: track.kind});
             connection.addTrack(track, stream);
             // To Remove
-/*            const sender = connection.getSenders().find(s => s.track?.kind === 'video');
-            if (sender) {
-                const rep = await sender.getStats();
-                rep.forEach(s => {
-                    if (s.type === 'outbound-rtp' && !s.isRemote) {
-                        this.logger.info('outbound-rtp', {
-                            frameWidth: (s as any).frameWidth,
-                            frameHeight: (s as any).frameHeight,
-                            fps: s.framesPerSecond,
-                            qualityLimitationReason: (s as any).qualityLimitationReason // 'cpu' | 'bandwidth' | 'none'
-                        });
-                    }
-                });
+            /*            const sender = connection.getSenders().find(s => s.track?.kind === 'video');
+                        if (sender) {
+                            const rep = await sender.getStats();
+                            rep.forEach(s => {
+                                if (s.type === 'outbound-rtp' && !s.isRemote) {
+                                    this.logger.info('outbound-rtp', {
+                                        frameWidth: (s as any).frameWidth,
+                                        frameHeight: (s as any).frameHeight,
+                                        fps: s.framesPerSecond,
+                                        qualityLimitationReason: (s as any).qualityLimitationReason // 'cpu' | 'bandwidth' | 'none'
+                                    });
+                                }
+                            });
 
-                const params = sender.getParameters();
-                params.encodings = [{ scaleResolutionDownBy: 1, maxBitrate: 1_500_000 }];
-                (params as any).degradationPreference = 'maintain-resolution';
-                await sender.setParameters(params);
-            }*/
+                            const params = sender.getParameters();
+                            params.encodings = [{ scaleResolutionDownBy: 1, maxBitrate: 1_500_000 }];
+                            (params as any).degradationPreference = 'maintain-resolution';
+                            await sender.setParameters(params);
+                        }*/
 
             // END
-            this.logger.debug('Track added successfully', { trackKind: track.kind });
+            this.logger.debug('Track added successfully', {trackKind: track.kind});
 
         } catch (error) {
             this.logger.error('Failed to add track', error as Error);
@@ -193,9 +183,9 @@ export class WebRTCService implements IWebRTCService {
             try {
                 connection.close();
                 this.connections.delete(participantId);
-                this.logger.info('WebRTC connection closed', { participantId });
+                this.logger.info('WebRTC connection closed', {participantId});
             } catch (error) {
-                this.logger.error('Error closing WebRTC connection', error as Error, { participantId });
+                this.logger.error('Error closing WebRTC connection', error as Error, {participantId});
             }
         }
     }

@@ -1,9 +1,9 @@
-import { ValidationError } from '../errors/call-error';
+import { ValidationError } from '../../../shared/errors/call-error';
 
 export interface CallParam {
     usersToCallId: string[];
     callIssuerId: string;
-    videoSelector: string;
+    localVideoSelector: string;
     idContentForCall: string;
 }
 
@@ -34,7 +34,7 @@ export class CallValidators {
             throw new ValidationError('callIssuerId is required');
         }
 
-        if (!callParam.videoSelector?.trim()) {
+        if (!callParam.localVideoSelector?.trim()) {
             throw new ValidationError('videoSelector is required');
         }
 

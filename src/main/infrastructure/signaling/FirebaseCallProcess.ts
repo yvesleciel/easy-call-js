@@ -1,12 +1,12 @@
-import {CallBack, CallProcess, RTCExchangeDataType} from "../feature/CallProcess";
+import {CallBack, CallProcessSignaling, RTCExchangeDataType} from "../../core/call/driven/call-process-signaling";
 import {FirebaseOptions, initializeApp} from "@firebase/app"
 import { getFirestore, Firestore, doc, setDoc, getDoc, addDoc, collection, updateDoc,
   arrayUnion, onSnapshot, deleteDoc, query, where } from "firebase/firestore";
 import {Observable} from "rxjs";
-import {Logger} from "../utils/logger";
+import {Logger} from "../../shared/utils/logger";
 
 
-export class FirebaseCallProcess implements CallProcess {
+export class FirebaseCallProcess implements CallProcessSignaling {
   db: Firestore;
   hasAcquiredLock = false;
   private readonly logger = Logger.getInstance(0);

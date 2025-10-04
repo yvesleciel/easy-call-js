@@ -1,24 +1,18 @@
-import { VideoElementError } from '../errors/call-error';
-import { Logger } from '../utils/logger';
-import { UIConfig } from '../config/call-config';
-
-export interface IVideoUIService {
-    createVideoElement(id: string, containerId: string): HTMLVideoElement;
-    attachStream(videoId: string, stream: MediaStream): void;
-    removeVideo(videoId: string): void;
-    getVideoElement(id: string): HTMLVideoElement | null;
-    cleanup(): void;
-}
+import {Logger} from "../../shared/utils/logger";
+import {UIConfig} from "../../core/call/app-config/call-config";
+import {VideoElementError} from "../../shared/errors/call-error";
+import {IVideoUIService} from "../../core/call/driven/video-ui.service";
 
 export class VideoUIService implements IVideoUIService {
     private readonly logger = Logger.getInstance();
     private videoElements = new Map<string, HTMLVideoElement>();
 
-    constructor(private config: UIConfig) {}
+    constructor(private config: UIConfig) {
+    }
 
     createVideoElement(id: string, containerId: string): HTMLVideoElement {
         try {
-            this.logger.debug('Creating video element', { id, containerId });
+            this.logger.debug('Creating video element', {id, containerId});
 
             // Vérifier que le conteneur existe
             const container = document.getElementById(containerId);
@@ -42,18 +36,18 @@ export class VideoUIService implements IVideoUIService {
             container.appendChild(video);
             this.videoElements.set(id, video);
 
-            this.logger.info('Video element created successfully', { id, containerId });
+            this.logger.info('Video element created successfully', {id, containerId});
             return video;
 
         } catch (error) {
-            this.logger.error('Failed to create video element', error as Error, { id, containerId });
+            this.logger.error('Failed to create video element', error as Error, {id, containerId});
             throw error;
         }
     }
 
     attachStream(videoId: string, stream: MediaStream): void {
         try {
-            this.logger.debug('Attaching stream to video', { videoId });
+            this.logger.debug('Attaching stream to video', {videoId});
 
             const video = this.getVideoElement(videoId);
             if (!video) {
@@ -63,7 +57,7 @@ export class VideoUIService implements IVideoUIService {
             // Vérifier que le stream contient des tracks vidéo
             const videoTracks = stream.getVideoTracks();
             if (videoTracks.length === 0) {
-                this.logger.warn('No video tracks in stream', { videoId });
+                this.logger.warn('No video tracks in stream', {videoId});
             }
 
             // Vérifier l'état des tracks
@@ -93,21 +87,21 @@ export class VideoUIService implements IVideoUIService {
                 // Forcer la lecture si elle ne démarre pas automatiquement
                 if (video.paused && this.config.autoplay) {
                     video.play().catch(error => {
-                        this.logger.warn('Autoplay failed', { videoId });
+                        this.logger.warn('Autoplay failed', {videoId});
                     });
                 }
             };
 
             video.oncanplay = () => {
-                this.logger.info('Video can play', { videoId });
+                this.logger.info('Video can play', {videoId});
             };
 
             video.onplay = () => {
-                this.logger.info('Video started playing', { videoId });
+                this.logger.info('Video started playing', {videoId});
             };
 
             video.onerror = (error) => {
-                this.logger.error('Video error',new Error(error as string), { videoId });
+                this.logger.error('Video error', new Error(error as string), {videoId});
             };
 
             this.logger.info('Stream attached to video successfully', {
@@ -117,14 +111,14 @@ export class VideoUIService implements IVideoUIService {
             });
 
         } catch (error) {
-            this.logger.error('Failed to attach stream to video', error as Error, { videoId });
+            this.logger.error('Failed to attach stream to video', error as Error, {videoId});
             throw error;
         }
     }
 
     removeVideo(videoId: string): void {
         try {
-            this.logger.debug('Removing video element', { videoId });
+            this.logger.debug('Removing video element', {videoId});
 
             const video = this.videoElements.get(videoId);
             if (video) {
@@ -139,19 +133,19 @@ export class VideoUIService implements IVideoUIService {
                 video.remove();
                 this.videoElements.delete(videoId);
 
-                this.logger.info('Video element removed successfully', { videoId });
+                this.logger.info('Video element removed successfully', {videoId});
             }
 
         } catch (error) {
-            this.logger.error('Failed to remove video element', error as Error, { videoId });
+            this.logger.error('Failed to remove video element', error as Error, {videoId});
         }
     }
 
     getVideoElement(id: string): HTMLVideoElement | null {
         const element = this.videoElements.get(id);
-/*        if (element) {
-            return element;
-        }*/
+        /*        if (element) {
+                    return element;
+                }*/
 
         // Fallback: chercher dans le DOM
         const domElement = document.getElementById(id) as HTMLVideoElement;

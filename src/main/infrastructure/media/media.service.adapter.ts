@@ -1,23 +1,18 @@
-import { MediaDeviceError } from '../errors/call-error';
-import { Logger } from '../utils/logger';
-import { MediaConfig } from '../config/call-config';
-
-export interface IMediaService {
-    getUserMedia(constraints?: MediaStreamConstraints): Promise<MediaStream>;
-    stopAllTracks(stream: MediaStream): void;
-    getAvailableDevices(): Promise<MediaDeviceInfo[]>;
-    cleanup(): void;
-}
+import {Logger} from "../../shared/utils/logger";
+import {MediaConfig} from "../../core/call/app-config/call-config";
+import {MediaDeviceError} from "../../shared/errors/call-error";
+import {IMediaService} from "../../core/call/driven/media.service";
 
 export class MediaService implements IMediaService {
     private readonly logger = Logger.getInstance();
     private activeStreams = new Set<MediaStream>();
 
-    constructor(private config: MediaConfig) {}
+    constructor(private config: MediaConfig) {
+    }
 
     async getUserMedia(constraints?: MediaStreamConstraints): Promise<MediaStream> {
         try {
-            this.logger.debug('Requesting user media', { constraints });
+            this.logger.debug('Requesting user media', {constraints});
 
             const finalConstraints = constraints || this.config;
 
@@ -37,7 +32,7 @@ export class MediaService implements IMediaService {
         } catch (error) {
             const message = error instanceof Error ? error.message : 'Unknown media error';
             this.logger.error('Failed to get user media', error as Error);
-            throw new MediaDeviceError(`Failed to access media devices: ${message}`, { constraints });
+            throw new MediaDeviceError(`Failed to access media devices: ${message}`, {constraints});
         }
     }
 
@@ -64,7 +59,7 @@ export class MediaService implements IMediaService {
             }
 
             const devices = await navigator.mediaDevices.enumerateDevices();
-            this.logger.debug('Available devices enumerated', { count: devices.length });
+            this.logger.debug('Available devices enumerated', {count: devices.length});
             return devices;
         } catch (error) {
             this.logger.error('Failed to enumerate devices', error as Error);

@@ -1,5 +1,5 @@
-import {CallParam} from "../feature/CallProcess";
 import {Observable} from "rxjs";
+import {CallParam} from "../validators/call-validators";
 
 export interface ICallProcessService {
     initializeCall(callIssuer: string, usersToCallId: string[]): Promise<string>;
@@ -10,7 +10,7 @@ export interface ICallProcessService {
 
     trackCall(userId: string): Promise<string>;
 
-    releaseCall(callId: string, userId: string): void;
+    releaseCall(callId: string, userId: string): Promise<void>;
 
     rejectCall(userId: string): Promise<void>
 

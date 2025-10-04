@@ -1,4 +1,4 @@
-import { Logger } from '../utils/logger';
+import { Logger } from '../../../shared/utils/logger';
 
 export class ResourceManager {
     private readonly logger = Logger.getInstance();

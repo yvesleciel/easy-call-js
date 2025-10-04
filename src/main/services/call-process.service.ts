@@ -1,43 +1,32 @@
 import { Observable, Subject, takeUntil } from 'rxjs';
-import { ICallProcessService } from '../api/call-process';
-import { CallProcess, RTCExchangeDataType } from '../feature/CallProcess';
-import { CallParam, TriggerCallParam, CallValidators } from '../validators/call-validators';
-import { Logger } from '../utils/logger';
-import { CallStateMachine, CallState } from '../state/call-state-machine';
-import { IMediaService } from './media.service';
-import { IVideoUIService } from './video-ui.service';
-import { IWebRTCService } from './webrtc.service';
-import { ResourceManager } from './resource-manager.service';
-import { CallConfig, ConfigService } from '../config/call-config';
-import {AnswerHandler, IceHandler, OfferHandler} from "../handlers/callback-handlers";
+import { ICallProcessService } from '../core/call/driving/call-process';
+import { CallProcessSignaling, RTCExchangeDataType } from '../core/call/driven/call-process-signaling';
+import { CallParam, TriggerCallParam, CallValidators } from '../core/call/validators/call-validators';
+import { Logger } from '../shared/utils/logger';
+import { CallStateMachine, CallState } from '../core/call/state/call-state-machine';
+import { IMediaService } from '../core/call/driven/media.service';
+import { IVideoUIService } from '../core/call/driven/video-ui.service';
+import { IWebRTCService } from '../core/call/driven/webrtc.service';
+import { ResourceManager } from '../core/call/driven/resource-manager.service';
+import {AnswerHandler, IceHandler, OfferHandler} from "../core/call/handlers/callback-handlers";
 
 export class CallProcessService implements ICallProcessService {
   private readonly logger = Logger.getInstance();
   private readonly stateMachine = new CallStateMachine();
   private readonly resourceManager = new ResourceManager();
   private readonly destroySubject = new Subject<void>();
-  private readonly config: CallConfig;
 
   constructor(
-      private callProcess: CallProcess,
-      private mediaService: IMediaService,
-      private videoUIService: IVideoUIService,
-      private webRTCService: IWebRTCService,
-      config?: Partial<CallConfig>
+      private readonly callProcess: CallProcessSignaling,
+      private readonly mediaService: IMediaService,
+      private readonly videoUIService: IVideoUIService,
+      private readonly webRTCService: IWebRTCService
   ) {
-    this.config = { ...ConfigService.getInstance().getDefaultConfig(), ...config };
     this.setupStateSubscriptions();
   }
 
   /**
-   * RAF:
-   * Changer les descriptions des tests en Anglais
-   * Faire un refactoring en mettant les infra dans leur dossiers et en introduisant un domaine service pour les méthodes privées
-   * Trouver une bonne config par défaut qui supprime définitivement l'écho
-   */
-
-  /**
-   * Initialise un nouvel appel
+   * Initialize a new call
    */
   async initializeCall(callIssuer: string, usersToCallId: string[]): Promise<string> {
     try {
@@ -61,7 +50,7 @@ export class CallProcessService implements ICallProcessService {
   }
 
   /**
-   * Lance un appel vers plusieurs utilisateurs
+   * Launch a call to multiple users
    */
   async launchCall(callParam: CallParam, callId: string): Promise<void> {
     try {
@@ -72,10 +61,8 @@ export class CallProcessService implements ICallProcessService {
 
       this.logger.info('Launching call', { callId, participantCount: callParam.usersToCallId.length });
 
-      // Obtenir le stream local
-      const localStream = await this.setupLocalVideo(callParam.videoSelector);
+      const localStream = await this.setupLocalVideo(callParam.localVideoSelector);
 
-      // Traiter tous les participants en parallèle
       const processPromises = callParam.usersToCallId.map(participantId =>
           this.processParticipant({
             callParam,
@@ -98,7 +85,7 @@ export class CallProcessService implements ICallProcessService {
   }
 
   /**
-   * Accepte un appel entrant
+   * Accept an incoming call
    */
   async takeCall(
       participantId: string,
@@ -116,7 +103,7 @@ export class CallProcessService implements ICallProcessService {
 
       const localStream = await this.setupLocalVideo(localVideoSelector);
 
-      // Écouter la libération du verrou pour rejoindre l'appel
+      // Listen for lock release to join the call
       this.callProcess.listenForLockRelease(callId, participantId, async () => {
         await this.handleJoinCall(callId, participantId, localStream, idContentForCallSelector);
       });
@@ -129,7 +116,7 @@ export class CallProcessService implements ICallProcessService {
   }
 
   /**
-   * Surveille les nouveaux appels pour un utilisateur
+   *Monitor new calls for a user
    */
   async trackCall(userId: string): Promise<string> {
     try {
@@ -145,7 +132,7 @@ export class CallProcessService implements ICallProcessService {
   }
 
   /**
-   * Quitte un appel et libère les ressources
+   * Leave a call and free resources
    */
   async releaseCall(callId: string, userId: string): Promise<void> {
     try {
@@ -181,7 +168,7 @@ export class CallProcessService implements ICallProcessService {
   }
 
   /**
-   * Écoute les événements de départ d'appel
+   * Listen for call departure events
    */
   handleLeaveCall(callId: string): Observable<string> {
     CallValidators.validateCallId(callId);
@@ -191,7 +178,7 @@ export class CallProcessService implements ICallProcessService {
   }
 
   /**
-   * Supprime la vidéo d'un participant
+   * Remove a participant's video
    */
   removeParticipantVideo(userId: string): void {
     try {
@@ -208,7 +195,7 @@ export class CallProcessService implements ICallProcessService {
 
 
   /**
-   * Nettoie toutes les ressources
+   * Clean up all resources
    */
   async cleanup(): Promise<void> {
     this.logger.info('Cleaning up call process service');
@@ -216,7 +203,7 @@ export class CallProcessService implements ICallProcessService {
     this.destroySubject.next();
     this.destroySubject.complete();
 
-    // Nettoyer toutes les ressources en parallèle et capturer les erreurs
+    // Clean up all resources in parallel and capture errors
     const cleanupOperations = [
       this.safeCleanup('ResourceManager', () => this.resourceManager.cleanupAll()),
       this.safeCleanup('MediaService', () => this.mediaService.cleanup()),
@@ -226,7 +213,6 @@ export class CallProcessService implements ICallProcessService {
 
     const results = await Promise.allSettled(cleanupOperations);
 
-    // Logger les échecs mais ne pas faire échouer le cleanup global
     const failures = results
         .map((result, index) => ({ result, operation: cleanupOperations[index] }))
         .filter(({ result }) => result.status === 'rejected');
@@ -240,16 +226,14 @@ export class CallProcessService implements ICallProcessService {
   }
 
 
-  // Méthodes privées
 
-
+  // private method
   private async safeCleanup(serviceName: string, cleanupFn: () => void | Promise<void>): Promise<void> {
     try {
       await cleanupFn();
       this.logger.debug(`${serviceName} cleanup completed`);
     } catch (error) {
       this.logger.error(`${serviceName} cleanup failed`, error as Error);
-      // Ne pas relancer l'erreur pour permettre aux autres cleanups de continuer
     }
   }
 
@@ -267,15 +251,15 @@ export class CallProcessService implements ICallProcessService {
       const rtcConnection = await this.webRTCService.createConnection(triggerCallParam.participantId);
       this.resourceManager.addConnection(triggerCallParam.participantId, rtcConnection);
 
-      // Ajouter les tracks locaux
+      // add local track
       triggerCallParam.localStream.getTracks().forEach(track => {
         this.webRTCService.addTrack(rtcConnection, track, triggerCallParam.localStream);
       });
 
-      // Créer et envoyer l'offre
+      // Create and send offer
       const offer = await this.webRTCService.createOffer(rtcConnection);
 
-      // Configurer la gestion des événements
+      // Configure events management
       await this.setupConnectionEventHandlers(rtcConnection, triggerCallParam);
 
       this.callProcess.writeOfferOrAnswerOrIce(
@@ -285,7 +269,7 @@ export class CallProcessService implements ICallProcessService {
           {offer, issuer: triggerCallParam.callParam.callIssuerId}
       );
 
-      // Écouter les réponses
+      // Listen to responses
       await this.setupAnswerAndIceHandlers(rtcConnection, triggerCallParam);
 
       this.logger.info('Participant processed successfully', { participantId: triggerCallParam.participantId });
@@ -302,7 +286,7 @@ export class CallProcessService implements ICallProcessService {
       connection: RTCPeerConnection,
       triggerCallParam: TriggerCallParam
   ): Promise<void> {
-    // Gestion des candidats ICE
+    // ICE candidates managemen
     connection.addEventListener('icecandidate', event => {
       if (event.candidate) {
         const iceCandidateData = {
@@ -320,7 +304,7 @@ export class CallProcessService implements ICallProcessService {
       }
     });
 
-    // Gestion des streams entrants
+    // Incoming streams management
     connection.addEventListener('track', event => {
       const remoteVideoId = `remote${triggerCallParam.participantId}`;
 
@@ -333,7 +317,6 @@ export class CallProcessService implements ICallProcessService {
       if (event.streams && event.streams.length > 0) {
         const remoteStream = event.streams[0];
 
-        // Créer l'élément vidéo s'il n'existe pas encore
         let remoteVideo = this.videoUIService.getVideoElement(remoteVideoId);
         if (!remoteVideo) {
           remoteVideo = this.videoUIService.createVideoElement(
@@ -342,7 +325,7 @@ export class CallProcessService implements ICallProcessService {
           );
         }
 
-        // Attacher le stream
+        // attach stream
         this.videoUIService.attachStream(remoteVideoId, remoteStream);
         this.resourceManager.addStream(triggerCallParam.participantId, remoteStream);
 
@@ -365,7 +348,7 @@ export class CallProcessService implements ICallProcessService {
       connection: RTCPeerConnection,
       triggerCallParam: TriggerCallParam
   ): Promise<void> {
-    // Écouter les réponses
+    // listen responses
     console.log("setupAnswerAndIceHandlers");
     await this.callProcess.onReadOfferOrAnswerOrIce(
         triggerCallParam.callId,
@@ -375,7 +358,7 @@ export class CallProcessService implements ICallProcessService {
         new AnswerHandler(connection, this.webRTCService)
     );
 
-    // Écouter les candidats ICE
+    // listen ice candidate
     await this.callProcess.onReadOfferOrAnswerOrIce(
         triggerCallParam.callId,
         triggerCallParam.callParam.callIssuerId,
@@ -393,10 +376,8 @@ export class CallProcessService implements ICallProcessService {
   ): Promise<void> {
     await this.callProcess.joinCall(callId, participantId);
 
-    // Gérer les participants existants
     await this.handleExistingParticipants(callId, participantId, localStream, idContentForCallSelector);
 
-    // Gérer les nouveaux participants
     await this.handleNewParticipants(callId, participantId, localStream, idContentForCallSelector);
 
     this.stateMachine.transition(CallState.CONNECTED, { callId });
@@ -417,7 +398,7 @@ export class CallProcessService implements ICallProcessService {
               usersToCallId: participantsToProcess,
               callIssuerId: participantId,
               idContentForCall: idContentForCallSelector,
-              videoSelector: 'localVideo'
+              localVideoSelector: 'localVideo'
             },
             participantId: participant,
             callId,
@@ -467,12 +448,10 @@ export class CallProcessService implements ICallProcessService {
       const connection = await this.webRTCService.createConnection(existingParticipant);
       this.resourceManager.addConnection(existingParticipant, connection);
 
-      // Ajouter les tracks locaux
       localStream.getTracks().forEach(track => {
         this.webRTCService.addTrack(connection, track, localStream);
       });
 
-      // Écouter l'offre et créer une réponse
       await this.callProcess.onReadOfferOrAnswerOrIce(
           callId,
           participantId,
@@ -481,7 +460,6 @@ export class CallProcessService implements ICallProcessService {
           new OfferHandler(connection, this.webRTCService, callId, existingParticipant, participantId, this.callProcess)
       );
 
-      // Configurer les événements
       await this.setupExistingParticipantEvents(
           connection,
           callId,
@@ -502,7 +480,6 @@ export class CallProcessService implements ICallProcessService {
       existingParticipant: string,
       idContentForCallSelector: string
   ): Promise<void> {
-    // Gestion des candidats ICE
     connection.addEventListener('icecandidate', event => {
       if (event.candidate) {
         const iceCandidateData = {
@@ -520,7 +497,6 @@ export class CallProcessService implements ICallProcessService {
       }
     });
 
-    // Gestion des streams entrants
     connection.addEventListener('track', event => {
       const remoteVideoId = `remote${existingParticipant}`;
 
@@ -533,7 +509,6 @@ export class CallProcessService implements ICallProcessService {
       if (event.streams && event.streams.length > 0) {
         const remoteStream = event.streams[0];
 
-        // Créer l'élément vidéo s'il n'existe pas encore
         let remoteVideo = this.videoUIService.getVideoElement(remoteVideoId);
         if (!remoteVideo) {
           remoteVideo = this.videoUIService.createVideoElement(
@@ -542,7 +517,6 @@ export class CallProcessService implements ICallProcessService {
           );
         }
 
-        // Attacher le stream
         this.videoUIService.attachStream(remoteVideoId, remoteStream);
         this.resourceManager.addStream(participantId, remoteStream);
 
@@ -559,7 +533,6 @@ export class CallProcessService implements ICallProcessService {
       }
     });
 
-    // Écouter les candidats ICE
     await this.callProcess.onReadOfferOrAnswerOrIce(
         callId,
         participantId,
