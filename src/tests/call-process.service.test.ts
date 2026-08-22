@@ -1,771 +1,437 @@
+import { of, throwError, firstValueFrom, lastValueFrom } from 'rxjs';
+
 import { CallProcessService } from '../main/services/call-process.service';
-import { ICallProcessService } from '../main/core/call/driving/call-process';
-import { CallProcessSignaling, RTCExchangeDataType } from '../main/core/call/driven/call-process-signaling';
+import {
+    CallProcessSignaling,
+    RTCExchangeDataType,
+} from '../main/core/call/driven/call-process-signaling';
 import { IMediaService } from '../main/core/call/driven/media.service';
 import { IVideoUIService } from '../main/core/call/driven/video-ui.service';
 import { IWebRTCService } from '../main/core/call/driven/webrtc.service';
-import { CallParam, CallValidators } from '../main/core/call/validators/call-validators';
-import { Logger } from '../main/shared/utils/logger';
-import { CallState } from '../main/core/call/state/call-state-machine';
-import { Subject, of, throwError } from 'rxjs';
+import { CallParam } from '../main/core/call/validators/call-validators';
+import { ValidationError } from '../main/shared/errors/call-error';
 
-jest.mock('../main/shared/utils/logger');
-jest.mock('../main/core/call/validators/call-validators');
+// Diagnostic logging is not observable behavior (see skill.md > Logging).
+// Silence it at the module boundary, but never assert on its calls.
+jest.mock('../main/shared/utils/logger', () => {
+    const silent = {
+        debug: jest.fn(),
+        info: jest.fn(),
+        warn: jest.fn(),
+        error: jest.fn(),
+    };
+    return {
+        LogLevel: { DEBUG: 0, INFO: 1, WARN: 2, ERROR: 3 },
+        Logger: { getInstance: () => silent },
+    };
+});
+
+// ---------------------------------------------------------------------------
+// Fixture data — expressive, immutable, visible inside every scenario.
+// ---------------------------------------------------------------------------
+
+const CALL_ID = 'call-42';
+const ISSUER = 'caller-1';
+const PARTICIPANTS = ['alice', 'bob'];
+const VALID_CALL_PARAM: CallParam = Object.freeze({
+    usersToCallId: [...PARTICIPANTS],
+    callIssuerId: ISSUER,
+    localVideoSelector: 'local-video',
+    idContentForCall: 'video-container',
+}) as CallParam;
+
+// ---------------------------------------------------------------------------
+// Test doubles at the *unmanaged* dependency boundaries only
+// (signaling → other peers; media/video/webrtc → browser APIs & DOM).
+// Every double is created fresh per test — no shared mutable fixtures.
+// ---------------------------------------------------------------------------
+
+function createStream(): MediaStream {
+    return {
+        getTracks: () => [],
+        getVideoTracks: () => [],
+        getAudioTracks: () => [],
+    } as unknown as MediaStream;
+}
+
+function createRtcConnection(): RTCPeerConnection {
+    return {
+        addEventListener: jest.fn(),
+        removeEventListener: jest.fn(),
+        close: jest.fn(),
+    } as unknown as RTCPeerConnection;
+}
+
+function createSignaling(): jest.Mocked<CallProcessSignaling> {
+    return {
+        createCall: jest.fn().mockResolvedValue(CALL_ID),
+        onNewCall: jest.fn().mockResolvedValue('incoming-call'),
+        onLeaveCall: jest.fn().mockReturnValue(of('left')),
+        joinCall: jest.fn().mockResolvedValue(undefined),
+        acquireLock: jest.fn().mockResolvedValue(true),
+        releaseLock: jest.fn(),
+        getAlreadyParticipants: jest.fn().mockResolvedValue([]),
+        getParticipantNotInCall: jest.fn().mockResolvedValue([]),
+        listenForLockRelease: jest.fn(),
+        releaseCall: jest.fn().mockResolvedValue(undefined),
+        rejectCall: jest.fn().mockResolvedValue(undefined),
+        writeOfferOrAnswerOrIce: jest.fn(),
+        onReadOfferOrAnswerOrIce: jest.fn().mockResolvedValue(undefined),
+    } as unknown as jest.Mocked<CallProcessSignaling>;
+}
+
+function createMedia(): jest.Mocked<IMediaService> {
+    return {
+        getUserMedia: jest.fn().mockResolvedValue(createStream()),
+        getAvailableDevices: jest.fn().mockResolvedValue([]),
+        stopAllTracks: jest.fn(),
+        cleanup: jest.fn(),
+    } as unknown as jest.Mocked<IMediaService>;
+}
+
+function createVideoUI(): jest.Mocked<IVideoUIService> {
+    return {
+        createVideoElement: jest.fn(),
+        attachStream: jest.fn(),
+        removeVideo: jest.fn(),
+        getVideoElement: jest.fn(),
+        cleanup: jest.fn(),
+    } as unknown as jest.Mocked<IVideoUIService>;
+}
+
+function createWebRTC(): jest.Mocked<IWebRTCService> {
+    return {
+        createConnection: jest.fn().mockResolvedValue(createRtcConnection()),
+        createOffer: jest.fn().mockResolvedValue({ type: 'offer', sdp: 'x' }),
+        createAnswer: jest.fn().mockResolvedValue({ type: 'answer', sdp: 'x' }),
+        setRemoteDescription: jest.fn().mockResolvedValue(undefined),
+        addIceCandidate: jest.fn().mockResolvedValue(undefined),
+        addTrack: jest.fn(),
+        cleanup: jest.fn(),
+        closeConnection: jest.fn(),
+    } as unknown as jest.Mocked<IWebRTCService>;
+}
+
+type Doubles = {
+    signaling: jest.Mocked<CallProcessSignaling>;
+    media: jest.Mocked<IMediaService>;
+    videoUI: jest.Mocked<IVideoUIService>;
+    webrtc: jest.Mocked<IWebRTCService>;
+};
+
+function buildSut(overrides: Partial<Doubles> = {}): Doubles & { sut: CallProcessService } {
+    const signaling = overrides.signaling ?? createSignaling();
+    const media = overrides.media ?? createMedia();
+    const videoUI = overrides.videoUI ?? createVideoUI();
+    const webrtc = overrides.webrtc ?? createWebRTC();
+    const sut = new CallProcessService(signaling, media, videoUI, webrtc);
+    return { sut, signaling, media, videoUI, webrtc };
+}
+
+function offerRecipients(signaling: jest.Mocked<CallProcessSignaling>): string[] {
+    return signaling.writeOfferOrAnswerOrIce.mock.calls
+        .filter(([, , type]) => type === RTCExchangeDataType.OFFER)
+        .map(([, participantId]) => participantId as string)
+        .sort();
+}
+
+// ---------------------------------------------------------------------------
+// Behavior specs
+// ---------------------------------------------------------------------------
 
 describe('CallProcessService', () => {
-    let service: ICallProcessService;
-    let mockStream: MediaStream;
-    let mockConnection: RTCPeerConnection;
-
-    let mockCallProcess: jest.Mocked<CallProcessSignaling>;
-    let mockMediaService: jest.Mocked<IMediaService>;
-    let mockVideoUIService: jest.Mocked<IVideoUIService>;
-    let mockWebRTCService: jest.Mocked<IWebRTCService>;
-    let mockLogger: any;
-    let mockCallValidators: jest.Mocked<typeof CallValidators>;
-
-    beforeEach(() => {
-        mockCallProcess = {
-            createCall: jest.fn(),
-            onNewCall: jest.fn(),
-            listenForLockRelease: jest.fn(),
-            releaseCall: jest.fn(),
-            rejectCall: jest.fn(),
-            onLeaveCall: jest.fn(),
-            joinCall: jest.fn(),
-            getParticipantNotInCall: jest.fn(),
-            getAlreadyParticipants: jest.fn(),
-            writeOfferOrAnswerOrIce: jest.fn(),
-            onReadOfferOrAnswerOrIce: jest.fn()
-        } as unknown as jest.Mocked<CallProcessSignaling>;
-
-        mockMediaService = {
-            getUserMedia: jest.fn(),
-            stopAllTracks: jest.fn(),
-            cleanup: jest.fn()
-        } as unknown as jest.Mocked<IMediaService>;
-
-        mockVideoUIService = {
-            attachStream: jest.fn(),
-            removeVideo: jest.fn(),
-            getVideoElement: jest.fn(),
-            createVideoElement: jest.fn(),
-            cleanup: jest.fn()
-        } as jest.Mocked<IVideoUIService>;
-
-        mockWebRTCService = {
-            createConnection: jest.fn(),
-            createOffer: jest.fn(),
-            createAnswer: jest.fn(),
-            addTrack: jest.fn(),
-            setLocalDescription: jest.fn(),
-            setRemoteDescription: jest.fn(),
-            addIceCandidate: jest.fn(),
-            cleanup: jest.fn()
-        } as unknown as jest.Mocked<IWebRTCService>;
-
-        mockLogger = {
-            info: jest.fn(),
-            error: jest.fn(),
-            debug: jest.fn(),
-            warn: jest.fn()
-        };
-        (Logger.getInstance as jest.Mock).mockReturnValue(mockLogger);
-
-        mockCallValidators = {
-            validateParticipantId: jest.fn(),
-            validateUsersArray: jest.fn(),
-            validateCallParam: jest.fn(),
-            validateCallId: jest.fn()
-        } as unknown as jest.Mocked<typeof CallValidators>;
-        (CallValidators as jest.Mocked<typeof CallValidators>) = mockCallValidators;
-
-        mockStream = {
-            getTracks: jest.fn().mockReturnValue([]),
-            getVideoTracks: jest.fn().mockReturnValue([]),
-            getAudioTracks: jest.fn().mockReturnValue([])
-        } as unknown as MediaStream;
-
-        mockConnection = {
-            addEventListener: jest.fn(),
-            removeEventListener: jest.fn(),
-            close: jest.fn()
-        } as unknown as RTCPeerConnection;
-
-        mockMediaService.getUserMedia.mockResolvedValue(mockStream);
-        mockWebRTCService.createConnection.mockResolvedValue(mockConnection);
-        mockWebRTCService.createOffer.mockResolvedValue({} as RTCSessionDescriptionInit);
-        mockCallProcess.createCall.mockResolvedValue('test-call-id');
-        mockCallProcess.onNewCall.mockResolvedValue('incoming-call-id');
-        mockCallProcess.onLeaveCall.mockReturnValue(of('user-left'));
-        mockCallProcess.getParticipantNotInCall.mockResolvedValue([]);
-        mockCallProcess.getAlreadyParticipants.mockResolvedValue([]);
-        mockCallProcess.releaseCall.mockResolvedValue(undefined);
-        mockCallProcess.rejectCall.mockResolvedValue(undefined);
-
-        service = new CallProcessService(
-            mockCallProcess,
-            mockMediaService,
-            mockVideoUIService,
-            mockWebRTCService
-        );
-    });
-
-    // Clean up after each test
-    afterEach(async () => {
-        if (service && typeof service.cleanup === 'function') {
-            try {
-                await service.cleanup();
-            } catch (error) {
-                // Ignore clean up error in test
-            }
-        }
-
-        jest.resetAllMocks();
-        jest.clearAllMocks();
-    });
 
     describe('initializeCall', () => {
-        const callIssuer = 'test-issuer';
-        const usersToCallId = ['user1', 'user2'];
 
-        beforeEach(() => {
-            // Specific reset for this test group
-            mockCallProcess.createCall.mockResolvedValue('test-call-id');
+        it('returns the id of the call created by the signaling layer', async () => {
+            const { sut, signaling } = buildSut();
+            signaling.createCall.mockResolvedValue('new-call-id');
+
+            const result = await sut.initializeCall(ISSUER, PARTICIPANTS);
+
+            expect(result).toBe('new-call-id');
         });
 
-        it('should initialize a call successfully', async () => {
-            const result = await service.initializeCall(callIssuer, usersToCallId);
+        it('rejects with a validation error when the issuer id is blank', async () => {
+            const { sut } = buildSut();
 
-            expect(result).toBe('test-call-id');
-            expect(mockCallValidators.validateParticipantId).toHaveBeenCalledWith(callIssuer);
-            expect(mockCallValidators.validateUsersArray).toHaveBeenCalledWith(usersToCallId);
-            expect(mockCallProcess.createCall).toHaveBeenCalledWith(callIssuer, usersToCallId);
-            expect(mockLogger.info).toHaveBeenCalledWith('Initializing call', expect.any(Object));
-            expect(mockLogger.info).toHaveBeenCalledWith('Call initialized successfully', expect.any(Object));
+            await expect(sut.initializeCall('   ', PARTICIPANTS))
+                .rejects.toThrow(ValidationError);
         });
 
-        it('should handle validation errors', async () => {
-            const validationError = new Error('Invalid participant ID');
-            mockCallValidators.validateParticipantId.mockImplementationOnce(() => {
-                throw validationError;
-            });
+        it('rejects with a validation error when any user id in the list is blank', async () => {
+            const { sut } = buildSut();
 
-            await expect(service.initializeCall(callIssuer, usersToCallId))
-                .rejects.toThrow(validationError);
-
-            expect(mockLogger.error).toHaveBeenCalledWith(
-                'Failed to initialize call',
-                validationError,
-                expect.any(Object)
-            );
+            await expect(sut.initializeCall(ISSUER, ['alice', '']))
+                .rejects.toThrow(ValidationError);
         });
 
-        it('should handle call creation errors', async () => {
-            const createError = new Error('Failed to create call');
-            mockCallProcess.createCall.mockRejectedValueOnce(createError);
+        it('surfaces a signaling failure to the caller', async () => {
+            const { sut, signaling } = buildSut();
+            const boom = new Error('signaling unavailable');
+            signaling.createCall.mockRejectedValue(boom);
 
-            await expect(service.initializeCall(callIssuer, usersToCallId))
-                .rejects.toThrow(createError);
-
-            expect(mockLogger.error).toHaveBeenCalledWith(
-                'Failed to initialize call',
-                createError,
-                expect.any(Object)
-            );
-        });
-
-        it('should validate empty users array', async () => {
-            await service.initializeCall(callIssuer, []);
-
-            expect(mockCallValidators.validateUsersArray).toHaveBeenCalledWith([]);
-            expect(mockCallProcess.createCall).toHaveBeenCalledWith(callIssuer, []);
+            await expect(sut.initializeCall(ISSUER, PARTICIPANTS)).rejects.toBe(boom);
         });
     });
 
     describe('launchCall', () => {
-        const callParam: CallParam = {
-            usersToCallId: ['user1', 'user2'],
-            callIssuerId: 'caller',
-            localVideoSelector: 'local-video',
-            idContentForCall: 'video-container'
-        };
-        const callId = 'test-call-id';
 
-        beforeEach(() => {
-            // Reset specific mocks for launchCall
-            mockMediaService.getUserMedia.mockResolvedValue(mockStream);
-            mockWebRTCService.createConnection.mockResolvedValue(mockConnection);
+        it('attaches the local stream to the local video and sends an offer to every requested participant', async () => {
+            const localStream = createStream();
+            const media = createMedia();
+            media.getUserMedia.mockResolvedValue(localStream);
+            const { sut, signaling, videoUI } = buildSut({ media });
+
+            await sut.launchCall(VALID_CALL_PARAM, CALL_ID);
+
+            expect(videoUI.attachStream)
+                .toHaveBeenCalledWith(VALID_CALL_PARAM.localVideoSelector, localStream);
+            expect(offerRecipients(signaling)).toEqual([...PARTICIPANTS].sort());
         });
 
-        it('should launch a call successfully', async () => {
-            await service.launchCall(callParam, callId);
+        it('rejects with a validation error when the participant list is empty', async () => {
+            const { sut } = buildSut();
+            const invalidParam: CallParam = { ...VALID_CALL_PARAM, usersToCallId: [] };
 
-            expect(mockCallValidators.validateCallParam).toHaveBeenCalledWith(callParam);
-            expect(mockCallValidators.validateCallId).toHaveBeenCalledWith(callId);
-            expect(mockMediaService.getUserMedia).toHaveBeenCalled();
-            expect(mockVideoUIService.attachStream).toHaveBeenCalledWith(
-                callParam.localVideoSelector,
-                mockStream
-            );
-            expect(mockLogger.info).toHaveBeenCalledWith('Launching call', expect.any(Object));
-            expect(mockLogger.info).toHaveBeenCalledWith('Call launched successfully', expect.any(Object));
+            await expect(sut.launchCall(invalidParam, CALL_ID))
+                .rejects.toThrow(ValidationError);
         });
 
-        it('should handle parameter validation errors', async () => {
-            const validationError = new Error('Invalid call parameters');
-            mockCallValidators.validateCallParam.mockImplementationOnce(() => {
-                throw validationError;
-            });
+        it('rejects with a validation error when the call id is blank', async () => {
+            const { sut } = buildSut();
 
-            await expect(service.launchCall(callParam, callId))
-                .rejects.toThrow(validationError);
-
-            expect(mockLogger.error).toHaveBeenCalledWith(
-                'Failed to launch call',
-                validationError,
-                expect.any(Object)
-            );
+            await expect(sut.launchCall(VALID_CALL_PARAM, '  '))
+                .rejects.toThrow(ValidationError);
         });
 
-        it('should handle local stream retrieval errors', async () => {
-            const mediaError = new Error('Failed to get user media');
-            mockMediaService.getUserMedia.mockRejectedValueOnce(mediaError);
+        it('aborts the launch when the local media cannot be captured', async () => {
+            const media = createMedia();
+            const mediaFailure = new Error('camera denied');
+            media.getUserMedia.mockRejectedValue(mediaFailure);
+            const { sut, signaling } = buildSut({ media });
 
-            await expect(service.launchCall(callParam, callId))
-                .rejects.toThrow(mediaError);
-
-            expect(mockLogger.error).toHaveBeenCalledWith(
-                'Failed to launch call',
-                mediaError,
-                expect.any(Object)
-            );
+            await expect(sut.launchCall(VALID_CALL_PARAM, CALL_ID)).rejects.toBe(mediaFailure);
+            expect(signaling.writeOfferOrAnswerOrIce).not.toHaveBeenCalled();
         });
 
-        it('should process participants even if some fail', async () => {
-            const connectionError = new Error('Connection failed');
-            mockWebRTCService.createConnection
-                .mockResolvedValueOnce(mockConnection)
-                .mockRejectedValueOnce(connectionError);
+        it('still delivers offers to the healthy participants when one connection fails', async () => {
+            const webrtc = createWebRTC();
+            webrtc.createConnection
+                .mockResolvedValueOnce(createRtcConnection())
+                .mockRejectedValueOnce(new Error('ICE gathering failed'));
+            const { sut, signaling } = buildSut({ webrtc });
 
-            // Should not throw global error
-            await service.launchCall(callParam, callId);
+            await sut.launchCall(VALID_CALL_PARAM, CALL_ID);
 
-            expect(mockWebRTCService.createConnection).toHaveBeenCalledTimes(2);
-            expect(mockLogger.info).toHaveBeenCalledWith('Call launched successfully', expect.any(Object));
-        });
-
-        it('should handle call with no participants', async () => {
-            const emptyCallParam = { ...callParam, usersToCallId: [] };
-
-            await service.launchCall(emptyCallParam, callId);
-
-            expect(mockLogger.info).toHaveBeenCalledWith('Call launched successfully', expect.any(Object));
+            // Only the participant whose connection succeeded receives an offer.
+            expect(offerRecipients(signaling)).toEqual(['alice']);
         });
     });
 
     describe('takeCall', () => {
-        const participantId = 'participant-123';
-        const callId = 'call-456';
-        const localVideoSelector = 'local-video';
-        const idContentForCallSelector = 'video-container';
 
-        beforeEach(() => {
-            mockMediaService.getUserMedia.mockResolvedValue(mockStream);
+        it('captures local media and registers a lock-release listener for the caller', async () => {
+            const localStream = createStream();
+            const media = createMedia();
+            media.getUserMedia.mockResolvedValue(localStream);
+            const { sut, signaling, videoUI } = buildSut({ media });
+
+            await sut.takeCall('participant-9', CALL_ID, 'local-video', 'video-container');
+
+            expect(videoUI.attachStream).toHaveBeenCalledWith('local-video', localStream);
+            expect(signaling.listenForLockRelease)
+                .toHaveBeenCalledWith(CALL_ID, 'participant-9', expect.any(Function));
         });
 
-        it('should accept a call successfully', async () => {
-            await service.takeCall(participantId, callId, localVideoSelector, idContentForCallSelector);
+        it('rejects with a validation error when the participant id is blank', async () => {
+            const { sut } = buildSut();
 
-            expect(mockCallValidators.validateParticipantId).toHaveBeenCalledWith(participantId);
-            expect(mockCallValidators.validateCallId).toHaveBeenCalledWith(callId);
-            expect(mockMediaService.getUserMedia).toHaveBeenCalled();
-            expect(mockVideoUIService.attachStream).toHaveBeenCalledWith(
-                localVideoSelector,
-                mockStream
-            );
-            expect(mockCallProcess.listenForLockRelease).toHaveBeenCalledWith(
-                callId,
-                participantId,
-                expect.any(Function)
-            );
-            expect(mockLogger.info).toHaveBeenCalledWith('Taking call', expect.any(Object));
+            await expect(sut.takeCall('', CALL_ID, 'v', 'c')).rejects.toThrow(ValidationError);
         });
 
-        it('should handle participant validation errors', async () => {
-            const validationError = new Error('Invalid participant ID');
-            mockCallValidators.validateParticipantId.mockImplementationOnce(() => {
-                throw validationError;
-            });
+        it('rejects with a validation error when the call id is blank', async () => {
+            const { sut } = buildSut();
 
-            await expect(service.takeCall(participantId, callId, localVideoSelector, idContentForCallSelector))
-                .rejects.toThrow(validationError);
-
-            expect(mockLogger.error).toHaveBeenCalledWith(
-                'Failed to take call',
-                validationError,
-                expect.any(Object)
-            );
+            await expect(sut.takeCall('participant-9', '   ', 'v', 'c'))
+                .rejects.toThrow(ValidationError);
         });
 
-        it('should handle call ID validation errors', async () => {
-            const validationError = new Error('Invalid call ID');
-            mockCallValidators.validateCallId.mockImplementationOnce(() => {
-                throw validationError;
-            });
+        it('does not register a lock listener when the local media capture fails', async () => {
+            const media = createMedia();
+            media.getUserMedia.mockRejectedValue(new Error('no devices'));
+            const { sut, signaling } = buildSut({ media });
 
-            await expect(service.takeCall(participantId, callId, localVideoSelector, idContentForCallSelector))
-                .rejects.toThrow(validationError);
-
-            expect(mockLogger.error).toHaveBeenCalledWith(
-                'Failed to take call',
-                validationError,
-                expect.any(Object)
-            );
-        });
-
-        it('should handle local video setup errors', async () => {
-            const mediaError = new Error('Media access denied');
-            mockMediaService.getUserMedia.mockRejectedValueOnce(mediaError);
-
-            await expect(service.takeCall(participantId, callId, localVideoSelector, idContentForCallSelector))
-                .rejects.toThrow(mediaError);
-
-            expect(mockLogger.error).toHaveBeenCalledWith(
-                'Failed to take call',
-                mediaError,
-                expect.any(Object)
-            );
+            await expect(sut.takeCall('p', CALL_ID, 'v', 'c')).rejects.toThrow('no devices');
+            expect(signaling.listenForLockRelease).not.toHaveBeenCalled();
         });
     });
 
     describe('trackCall', () => {
-        const userId = 'user-123';
 
-        beforeEach(() => {
-            mockCallProcess.onNewCall.mockResolvedValue('incoming-call-id');
+        it('returns the id of the next incoming call reported by the signaling layer', async () => {
+            const { sut, signaling } = buildSut();
+            signaling.onNewCall.mockResolvedValue('inbound-77');
+
+            const result = await sut.trackCall('user-x');
+
+            expect(result).toBe('inbound-77');
         });
 
-        it('should track calls successfully', async () => {
-            const result = await service.trackCall(userId);
+        it('rejects with a validation error when the user id is blank', async () => {
+            const { sut } = buildSut();
 
-            expect(result).toBe('incoming-call-id');
-            expect(mockCallValidators.validateParticipantId).toHaveBeenCalledWith(userId);
-            expect(mockCallProcess.onNewCall).toHaveBeenCalledWith(userId);
-            expect(mockLogger.info).toHaveBeenCalledWith('Tracking calls for user', expect.any(Object));
+            await expect(sut.trackCall('')).rejects.toThrow(ValidationError);
         });
 
-        it('should handle validation errors', async () => {
-            const validationError = new Error('Invalid user ID');
-            mockCallValidators.validateParticipantId.mockImplementationOnce(() => {
-                throw validationError;
-            });
+        it('surfaces signaling failures to the caller', async () => {
+            const { sut, signaling } = buildSut();
+            const boom = new Error('lost connection');
+            signaling.onNewCall.mockRejectedValue(boom);
 
-            await expect(service.trackCall(userId))
-                .rejects.toThrow(validationError);
-
-            expect(mockLogger.error).toHaveBeenCalledWith(
-                'Failed to track calls',
-                validationError,
-                expect.any(Object)
-            );
-        });
-
-        it('should handle tracking errors', async () => {
-            const trackError = new Error('Failed to track calls');
-            mockCallProcess.onNewCall.mockRejectedValueOnce(trackError);
-
-            await expect(service.trackCall(userId))
-                .rejects.toThrow(trackError);
-
-            expect(mockLogger.error).toHaveBeenCalledWith(
-                'Failed to track calls',
-                trackError,
-                expect.any(Object)
-            );
+            await expect(sut.trackCall('user-x')).rejects.toBe(boom);
         });
     });
 
     describe('releaseCall', () => {
-        const callId = 'call-123';
-        const userId = 'user-456';
 
-        beforeEach(() => {
-            mockCallProcess.releaseCall.mockResolvedValue(undefined);
+        it('releases the call at the signaling layer on behalf of the given user', async () => {
+            const { sut, signaling } = buildSut();
 
-            // Mock state machine to allow all transitions
-            jest.spyOn((service as any).stateMachine, 'transition').mockImplementation(() => {
-                // Do nothing, allowing all transitions
-            });
+            await sut.releaseCall(CALL_ID, 'user-1');
 
+            expect(signaling.releaseCall).toHaveBeenCalledWith(CALL_ID, 'user-1');
         });
 
-        it('should release a call successfully', async () => {
-            await service.releaseCall(callId, userId);
+        it('rejects with a validation error when the call id is blank', async () => {
+            const { sut, signaling } = buildSut();
 
-            expect(mockCallValidators.validateCallId).toHaveBeenCalledWith(callId);
-            expect(mockCallValidators.validateParticipantId).toHaveBeenCalledWith(userId);
-            expect(mockCallProcess.releaseCall).toHaveBeenCalledWith(callId, userId);
-            expect(mockLogger.info).toHaveBeenCalledWith('Releasing call', expect.any(Object));
-            expect(mockLogger.info).toHaveBeenCalledWith('Call released successfully', expect.any(Object));
+            await expect(sut.releaseCall('', 'user-1')).rejects.toThrow(ValidationError);
+            expect(signaling.releaseCall).not.toHaveBeenCalled();
         });
 
-        it('should handle call ID validation errors', async () => {
-            const validationError = new Error('Invalid call ID');
-            mockCallValidators.validateCallId.mockImplementationOnce(() => {
-                throw validationError;
-            });
+        it('rejects with a validation error when the user id is blank', async () => {
+            const { sut, signaling } = buildSut();
 
-            await expect(service.releaseCall(callId, userId))
-                .rejects.toThrow(validationError);
-
-            expect(mockLogger.error).toHaveBeenCalledWith(
-                'Failed to release call',
-                validationError,
-                expect.any(Object)
-            );
+            await expect(sut.releaseCall(CALL_ID, '   ')).rejects.toThrow(ValidationError);
+            expect(signaling.releaseCall).not.toHaveBeenCalled();
         });
 
-        it('should handle user validation errors', async () => {
-            const validationError = new Error('Invalid user ID');
-            mockCallValidators.validateParticipantId.mockImplementationOnce(() => {
-                throw validationError;
-            });
+        it('surfaces signaling failures to the caller', async () => {
+            const { sut, signaling } = buildSut();
+            const boom = new Error('release failed');
+            signaling.releaseCall.mockRejectedValue(boom);
 
-            await expect(service.releaseCall(callId, userId))
-                .rejects.toThrow(validationError);
-
-            expect(mockLogger.error).toHaveBeenCalledWith(
-                'Failed to release call',
-                validationError,
-                expect.any(Object)
-            );
-        });
-
-        it('should handle call release errors', async () => {
-            const releaseError = new Error('Failed to release call');
-            mockCallProcess.releaseCall.mockRejectedValueOnce(releaseError);
-
-            await expect(service.releaseCall(callId, userId))
-                .rejects.toThrow(releaseError);
-
-            expect(mockLogger.error).toHaveBeenCalledWith(
-                'Failed to release call',
-                releaseError,
-                expect.any(Object)
-            );
+            await expect(sut.releaseCall(CALL_ID, 'user-1')).rejects.toBe(boom);
         });
     });
 
     describe('rejectCall', () => {
-        const userId = 'user-123';
 
-        beforeEach(() => {
-            mockCallProcess.rejectCall.mockResolvedValue(undefined);
+        it('rejects the incoming call at the signaling layer', async () => {
+            const { sut, signaling } = buildSut();
+
+            await sut.rejectCall('user-1');
+
+            expect(signaling.rejectCall).toHaveBeenCalledWith('user-1');
         });
 
-        it('should reject a call successfully', async () => {
-            await service.rejectCall(userId);
+        it('rejects with a validation error when the user id is blank', async () => {
+            const { sut, signaling } = buildSut();
 
-            expect(mockCallValidators.validateParticipantId).toHaveBeenCalledWith(userId);
-            expect(mockCallProcess.rejectCall).toHaveBeenCalledWith(userId);
-            expect(mockLogger.info).toHaveBeenCalledWith('Call rejected successfully', expect.any(Object));
+            await expect(sut.rejectCall('')).rejects.toThrow(ValidationError);
+            expect(signaling.rejectCall).not.toHaveBeenCalled();
         });
 
-        it('should handle validation errors', async () => {
-            const validationError = new Error('Invalid user ID');
-            mockCallValidators.validateParticipantId.mockImplementationOnce(() => {
-                throw validationError;
-            });
+        it('surfaces signaling failures to the caller', async () => {
+            const { sut, signaling } = buildSut();
+            const boom = new Error('reject failed');
+            signaling.rejectCall.mockRejectedValue(boom);
 
-            await expect(service.rejectCall(userId))
-                .rejects.toThrow(validationError);
-
-            expect(mockLogger.error).toHaveBeenCalledWith(
-                'Failed to reject call',
-                validationError,
-                expect.any(Object)
-            );
-        });
-
-        it('should handle call rejection errors', async () => {
-            const rejectError = new Error('Failed to reject call');
-            mockCallProcess.rejectCall.mockRejectedValueOnce(rejectError);
-
-            await expect(service.rejectCall(userId))
-                .rejects.toThrow(rejectError);
-
-            expect(mockLogger.error).toHaveBeenCalledWith(
-                'Failed to reject call',
-                rejectError,
-                expect.any(Object)
-            );
+            await expect(sut.rejectCall('user-1')).rejects.toBe(boom);
         });
     });
 
     describe('handleLeaveCall', () => {
-        const callId = 'call-123';
 
-        beforeEach(() => {
-            mockCallProcess.onLeaveCall.mockReturnValue(of('user-left'));
+        it('returns the leave-notification stream produced by the signaling layer', async () => {
+            const { sut, signaling } = buildSut();
+            signaling.onLeaveCall.mockReturnValue(of('alice'));
+
+            const first = await firstValueFrom(sut.handleLeaveCall(CALL_ID));
+
+            expect(first).toBe('alice');
         });
 
-        it('should set up call leave listener successfully', () => {
-            const result = service.handleLeaveCall(callId);
+        it('propagates signaling stream errors to subscribers', async () => {
+            const { sut, signaling } = buildSut();
+            const streamError = new Error('signaling dropped');
+            signaling.onLeaveCall.mockReturnValue(throwError(() => streamError));
 
-            expect(mockCallValidators.validateCallId).toHaveBeenCalledWith(callId);
-            expect(mockCallProcess.onLeaveCall).toHaveBeenCalledWith(callId);
-            expect(mockLogger.info).toHaveBeenCalledWith('Setting up leave call handler', expect.any(Object));
-            expect(result).toBeDefined();
+            await expect(lastValueFrom(sut.handleLeaveCall(CALL_ID))).rejects.toBe(streamError);
         });
 
-        it('should handle validation errors', () => {
-            const validationError = new Error('Invalid call ID');
-            mockCallValidators.validateCallId.mockImplementationOnce(() => {
-                throw validationError;
-            });
+        it('throws a validation error when the call id is blank', () => {
+            const { sut } = buildSut();
 
-            expect(() => service.handleLeaveCall(callId))
-                .toThrow(validationError);
-        });
-
-        it('should return an Observable', () => {
-            const mockObservable = of('user-left');
-            mockCallProcess.onLeaveCall.mockReturnValue(mockObservable);
-
-            const result = service.handleLeaveCall(callId);
-
-            expect(result).toBe(mockObservable);
-        });
-
-        it('should handle Observable errors', () => {
-            const errorObservable = throwError(() => new Error('Observable error'));
-            mockCallProcess.onLeaveCall.mockReturnValue(errorObservable);
-
-            const result = service.handleLeaveCall(callId);
-
-            expect(result).toBe(errorObservable);
+            expect(() => sut.handleLeaveCall('   ')).toThrow(ValidationError);
         });
     });
 
     describe('removeParticipantVideo', () => {
-        const userId = 'user-123';
 
-        it('should remove participant video successfully', () => {
-            service.removeParticipantVideo(userId);
+        it("removes the participant's remote video element from the UI", () => {
+            const { sut, videoUI } = buildSut();
 
-            expect(mockCallValidators.validateParticipantId).toHaveBeenCalledWith(userId);
-            expect(mockVideoUIService.removeVideo).toHaveBeenCalledWith(`remote${userId}`);
-            expect(mockLogger.info).toHaveBeenCalledWith('Removing participant video', expect.any(Object));
+            sut.removeParticipantVideo('alice');
+
+            expect(videoUI.removeVideo).toHaveBeenCalledWith('remotealice');
         });
 
-        it('should handle validation errors', () => {
-            const validationError = new Error('Invalid user ID');
-            mockCallValidators.validateParticipantId.mockImplementationOnce(() => {
-                throw validationError;
-            });
+        it('does nothing and does not throw when the participant id is blank', () => {
+            const { sut, videoUI } = buildSut();
 
-            // Should not throw error as it's handled internally
-            expect(() => service.removeParticipantVideo(userId))
-                .not.toThrow();
-
-            expect(mockLogger.error).toHaveBeenCalledWith(
-                'Failed to remove participant video',
-                validationError,
-                expect.any(Object)
-            );
+            expect(() => sut.removeParticipantVideo('')).not.toThrow();
+            expect(videoUI.removeVideo).not.toHaveBeenCalled();
         });
 
-        it('should handle video removal errors', () => {
-            const removeError = new Error('Failed to remove video');
-            mockVideoUIService.removeVideo.mockImplementationOnce(() => {
-                throw removeError;
-            });
+        it('swallows a UI removal failure and does not propagate it to the caller', () => {
+            const videoUI = createVideoUI();
+            videoUI.removeVideo.mockImplementation(() => { throw new Error('DOM detached'); });
+            const { sut } = buildSut({ videoUI });
 
-            // Should not throw error as it's handled internally
-            expect(() => service.removeParticipantVideo(userId))
-                .not.toThrow();
-
-            expect(mockLogger.error).toHaveBeenCalledWith(
-                'Failed to remove participant video',
-                removeError,
-                expect.any(Object)
-            );
-        });
-
-        it('should remove multiple participants', () => {
-            const users = ['user1', 'user2', 'user3'];
-
-            users.forEach(user => service.removeParticipantVideo(user));
-
-            users.forEach(user => {
-                expect(mockVideoUIService.removeVideo).toHaveBeenCalledWith(`remote${user}`);
-            });
+            expect(() => sut.removeParticipantVideo('alice')).not.toThrow();
         });
     });
 
     describe('cleanup', () => {
-        it('should clean up all resources successfully', async () => {
-            await service.cleanup();
 
-            expect(mockMediaService.cleanup).toHaveBeenCalled();
-            expect(mockVideoUIService.cleanup).toHaveBeenCalled();
-            expect(mockWebRTCService.cleanup).toHaveBeenCalled();
-            expect(mockLogger.info).toHaveBeenCalledWith('Cleaning up call process service');
+        it('releases resources at every underlying adapter', async () => {
+            const { sut, media, videoUI, webrtc } = buildSut();
+
+            await sut.cleanup();
+
+            expect(media.cleanup).toHaveBeenCalledTimes(1);
+            expect(videoUI.cleanup).toHaveBeenCalledTimes(1);
+            expect(webrtc.cleanup).toHaveBeenCalledTimes(1);
         });
 
-        it('should handle service cleanup errors', async () => {
-            const cleanupError = new Error('Cleanup failed');
-            mockMediaService.cleanup.mockImplementationOnce(() => {
-                throw cleanupError;
-            });
+        it('completes successfully even when one adapter fails to clean up', async () => {
+            const media = createMedia();
+            media.cleanup.mockImplementation(() => { throw new Error('media stuck'); });
+            const { sut, videoUI, webrtc } = buildSut({ media });
 
-            // Cleanup should continue even if a service fails
-            await expect(service.cleanup()).resolves.toBeUndefined();
+            await expect(sut.cleanup()).resolves.toBeUndefined();
+            // The other adapters are still asked to release their resources.
+            expect(videoUI.cleanup).toHaveBeenCalledTimes(1);
+            expect(webrtc.cleanup).toHaveBeenCalledTimes(1);
         });
 
-        it('should be able to be called multiple times without error', async () => {
-            await service.cleanup();
-            await service.cleanup();
+        it('can be invoked multiple times without raising', async () => {
+            const { sut } = buildSut();
 
-            expect(mockMediaService.cleanup).toHaveBeenCalledTimes(2);
-            expect(mockVideoUIService.cleanup).toHaveBeenCalledTimes(2);
-            expect(mockWebRTCService.cleanup).toHaveBeenCalledTimes(2);
-        });
-    });
-
-    describe('State machine state management', () => {
-        it('should transition to INITIALIZING state during initializeCall', async () => {
-            const stateMachineSpy = jest.spyOn((service as any).stateMachine, 'transition');
-
-            await service.initializeCall('caller', ['user1']);
-
-            expect(stateMachineSpy).toHaveBeenCalledWith(
-                CallState.INITIALIZING,
-                { participantCount: 1 }
-            );
-
-            stateMachineSpy.mockRestore();
-        });
-
-        it('should transition to ERROR state on error', async () => {
-            const stateMachineSpy = jest.spyOn((service as any).stateMachine, 'transition');
-            const error = new Error('Test error');
-            mockCallProcess.createCall.mockRejectedValueOnce(error);
-
-            await expect(service.initializeCall('caller', ['user1']))
-                .rejects.toThrow(error);
-
-            expect(stateMachineSpy).toHaveBeenCalledWith(
-                CallState.ERROR,
-                { error: error.message }
-            );
-
-            stateMachineSpy.mockRestore();
-        });
-
-        it('should transition to CONNECTING state during launchCall', async () => {
-            const stateMachineSpy = jest.spyOn((service as any).stateMachine, 'transition');
-            const callParam: CallParam = {
-                usersToCallId: ['user1'],
-                callIssuerId: 'caller',
-                localVideoSelector: 'video',
-                idContentForCall: 'container'
-            };
-
-            await service.launchCall(callParam, 'call-id');
-
-            expect(stateMachineSpy).toHaveBeenCalledWith(
-                CallState.CONNECTING,
-                { callId: 'call-id' }
-            );
-
-            stateMachineSpy.mockRestore();
-        });
-
-        it('should transition to DISCONNECTING state during releaseCall', async () => {
-            (service as any).stateMachine.state = CallState.CONNECTED;
-
-            const stateMachineSpy = jest.spyOn((service as any).stateMachine, 'transition');
-
-            service.releaseCall('call-id', 'user-id');
-
-            expect(stateMachineSpy).toHaveBeenCalledWith(
-                CallState.DISCONNECTING,
-                { callId: 'call-id' }
-            );
-
-            stateMachineSpy.mockRestore();
-        });
-    });
-
-    describe('Integration and complex use cases', () => {
-        it('should handle complete call workflow', async () => {
-            // 1. Initialize call
-            const callId = await service.initializeCall('caller', ['user1', 'user2']);
-
-            // 2. Launch call
-            const callParam: CallParam = {
-                usersToCallId: ['user1', 'user2'],
-                callIssuerId: 'caller',
-                localVideoSelector: 'video',
-                idContentForCall: 'container'
-            };
-            await service.launchCall(callParam, callId);
-
-            // 3. Handle leaves
-            const leaveObservable = service.handleLeaveCall(callId);
-            expect(leaveObservable).toBeDefined();
-
-            // 4. Remove participant
-            service.removeParticipantVideo('user1');
-
-            // 5. Release call
-            await service.releaseCall(callId, 'caller');
-
-            // 6. Cleanup
-            await service.cleanup();
-
-            // Verify all steps were logged
-            expect(mockLogger.info).toHaveBeenCalled();
-        });
-
-        it('should handle simultaneous incoming calls', async () => {
-            // Configure different responses for each call
-            mockCallProcess.onNewCall
-                .mockResolvedValueOnce('incoming-call-1')
-                .mockResolvedValueOnce('incoming-call-2')
-                .mockResolvedValueOnce('incoming-call-3');
-
-            const trackPromises = ['user1', 'user2', 'user3'].map(userId =>
-                service.trackCall(userId)
-            );
-
-            const results = await Promise.all(trackPromises);
-
-            expect(results).toEqual(['incoming-call-1', 'incoming-call-2', 'incoming-call-3']);
-            expect(mockCallProcess.onNewCall).toHaveBeenCalledTimes(3);
-        });
-
-        it('should maintain consistent state after partial errors', async () => {
-            const callParam: CallParam = {
-                usersToCallId: ['user1', 'user2'],
-                callIssuerId: 'caller',
-                localVideoSelector: 'video',
-                idContentForCall: 'container'
-            };
-
-            // Simulate error for one participant only
-            mockWebRTCService.createConnection
-                .mockResolvedValueOnce(mockConnection)
-                .mockRejectedValueOnce(new Error('Connection failed'));
-
-            // Call should still succeed globally
-            await expect(service.launchCall(callParam, 'call-id'))
-                .resolves.toBeUndefined();
-
-            expect(mockWebRTCService.createConnection).toHaveBeenCalledTimes(2);
+            await sut.cleanup();
+            await expect(sut.cleanup()).resolves.toBeUndefined();
         });
     });
 });
-
