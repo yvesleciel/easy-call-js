@@ -7,8 +7,8 @@ jest.mock('../shared/utils/logger', () => {
     return { LogLevel: {}, Logger: { getInstance: () => silent } };
 });
 
-function createConnection(): RTCPeerConnection {
-    return { addEventListener: jest.fn() } as unknown as RTCPeerConnection;
+function createConnection(signalingState: RTCSignalingState = 'have-local-offer'): RTCPeerConnection {
+    return { addEventListener: jest.fn(), signalingState } as unknown as RTCPeerConnection;
 }
 
 function createWebRTC(): jest.Mocked<IWebRTCService> {
@@ -51,6 +51,16 @@ describe('AnswerHandler', () => {
         const handler = new AnswerHandler(connection, webrtc);
 
         await expect(handler.do({ type: 'answer', sdp: 'x' } as RTCSessionDescriptionInit)).rejects.toBe(boom);
+    });
+
+    it('ignores a duplicate or late answer once the connection is already stable', async () => {
+        const connection = createConnection('stable');
+        const webrtc = createWebRTC();
+        const handler = new AnswerHandler(connection, webrtc);
+
+        await handler.do({ type: 'answer', sdp: 'x' } as RTCSessionDescriptionInit);
+
+        expect(webrtc.setRemoteDescription).not.toHaveBeenCalled();
     });
 });
 

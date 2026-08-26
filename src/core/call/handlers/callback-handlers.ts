@@ -12,6 +12,16 @@ export class AnswerHandler implements CallBack {
     ) {}
 
     async do(answer: RTCSessionDescriptionInit): Promise<void> {
+        // An answer is only meaningful right after we've sent our offer. A
+        // connection that already reached 'stable' has already applied one —
+        // a duplicate/late delivery here must be ignored rather than crash
+        // the peer connection with an InvalidStateError.
+        if (this.connection.signalingState !== 'have-local-offer') {
+            this.logger.warn('Ignoring answer: connection is not awaiting one', {
+                signalingState: this.connection.signalingState,
+            });
+            return;
+        }
         try {
             this.logger.info('Handling answer');
             await this.webRTCService.setRemoteDescription(this.connection, answer);

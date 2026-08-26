@@ -243,21 +243,28 @@ export class CallProcessService implements ICallProcessService {
         this.logger.info('Existing participants', { existing });
         if (!existing) return;
 
-        for (const peerId of existing) {
-            if (peerId === participantId) continue;
-            try {
-                await this.exchange.negotiate({
-                    callId,
-                    myId: participantId,
-                    peerId,
-                    localStream,
-                    role: 'joiner',
-                });
-                this.eventsSubject.next({ kind: 'ParticipantJoined', participantId: peerId });
-            } catch (error) {
-                this.emitError('takeCall.existingParticipant', error as Error, { peerId });
-            }
-        }
+        // Negotiate with every existing peer in parallel — each is an
+        // independent RTCPeerConnection, so serializing them (as a plain
+        // for-await loop would) only adds up their round-trip latencies and
+        // delays when later peers' streams appear, without buying safety.
+        const negotiations = existing
+            .filter(peerId => peerId !== participantId)
+            .map(async peerId => {
+                try {
+                    await this.exchange.negotiate({
+                        callId,
+                        myId: participantId,
+                        peerId,
+                        localStream,
+                        role: 'joiner',
+                    });
+                    this.eventsSubject.next({ kind: 'ParticipantJoined', participantId: peerId });
+                } catch (error) {
+                    this.emitError('takeCall.existingParticipant', error as Error, { peerId });
+                }
+            });
+
+        await Promise.allSettled(negotiations);
     }
 
     private async negotiateWithNewParticipants(

@@ -294,6 +294,44 @@ describe('CallProcessService', () => {
             await expect(takePromise).resolves.toBeUndefined();
             expect(events).toContainEqual({ kind: 'Joined', callId: CALL_ID });
         });
+
+        it('negotiates with existing participants concurrently rather than one at a time', async () => {
+            const signaling = createSignaling();
+            signaling.getAlreadyParticipants.mockResolvedValue(['alice', 'bob']);
+            let triggerJoin: (() => Promise<void>) | undefined;
+            signaling.listenForLockRelease.mockImplementation((_c, _p, cb) => {
+                triggerJoin = cb as () => Promise<void>;
+            });
+            // Alice's offer never arrives during this test; Bob's resolves
+            // immediately. If negotiations ran one at a time, Bob's would
+            // never complete since he's queued behind Alice's stuck one.
+            let resolveAliceOffer: (() => void) | undefined;
+            const aliceOfferPending = new Promise<void>(resolve => { resolveAliceOffer = resolve; });
+            signaling.onReadOfferOrAnswerOrIce.mockImplementation(async (_path, _idUser, participantId, type) => {
+                if (participantId === 'alice' && type === RTCExchangeDataType.OFFER) {
+                    await aliceOfferPending;
+                }
+                return undefined;
+            });
+            const { sut } = buildSut({ signaling });
+            const events = collectEvents(sut);
+
+            const takePromise = sut.takeCall('participant-9', CALL_ID);
+            await flush();
+            // Not awaited: completeJoin() won't settle until Alice's stuck
+            // negotiation resolves too — awaiting it here would deadlock.
+            const joinPromise = triggerJoin!();
+            await flush();
+
+            expect(events).toContainEqual({ kind: 'ParticipantJoined', participantId: 'bob' });
+            expect(events).not.toContainEqual({ kind: 'ParticipantJoined', participantId: 'alice' });
+
+            resolveAliceOffer!();
+            await joinPromise;
+            await takePromise;
+
+            expect(events).toContainEqual({ kind: 'ParticipantJoined', participantId: 'alice' });
+        });
     });
 
     describe('trackIncomingCalls', () => {

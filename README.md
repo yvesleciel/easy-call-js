@@ -14,8 +14,7 @@
 npm install easy-call-js
 ```
 
-🔴 **[Live demo](TODO_LIVE_DEMO_URL)** · 💻 **[Demo source (Angular)](TODO_DEMO_SOURCE_URL)**
-<!-- TODO: replace the two links above once the demo is deployed. The demo app referenced throughout the Angular examples below lives at that source link. -->
+🔴 **[Live demo](https://call-app-e29f1.web.app/)** · 💻 **[Demo source (Angular)](https://github.com/yvesleciel/test-easy-call-js)**
 
 ---
 
@@ -50,9 +49,27 @@ npm install easy-call-js
 
 ## Demo
 
-**[Try the live demo](TODO_LIVE_DEMO_URL)** — a small Angular app (source: **[demo repo](TODO_DEMO_SOURCE_URL)**) where each browser tab picks a user id, calls one or more of the others by id, and shows a full mesh video grid. It exercises the whole v2 surface: `startCall`, incoming-call banners via `trackIncomingCalls`, `takeCall`/`rejectCall`, `[ecVideo]` for rendering, and `releaseCall`/`cleanup` on hang-up/logout. The [Angular example](#angular--full-integration) below walks through the same app's key files.
+**[Try the live demo](https://call-app-e29f1.web.app/)** — a small Angular app (source: **[demo repo](https://github.com/yvesleciel/test-easy-call-js)**) where each participant picks a user id, calls one or more of the others by id, and shows a full mesh video grid. It exercises the whole v2 surface: `startCall`, incoming-call banners via `trackIncomingCalls`, `takeCall`/`rejectCall`, `[ecVideo]` for rendering, and `releaseCall`/`cleanup` on hang-up/logout. The [Angular example](#angular--full-integration) below walks through the same app's key files.
 
 No Angular? The same flow in plain TypeScript fits on one screen — see [Quick start](#quick-start) and the [Vanilla example](#vanilla-js--the-dom-adapter).
+
+> [!IMPORTANT]
+> Open the demo on **two (or three) separate physical devices** — a laptop plus a phone, two laptops, etc. — not multiple tabs or windows of the same browser on one machine. The demo claims your local camera for the call; most webcams (built-in or USB) only serve one active capture session at a time, so a second tab fighting the first for the same physical camera won't behave like an independent second participant. It's not a representative way to see the mesh in action, whatever the call banners show.
+
+> [!TIP]
+> **Trying the demo with 2, then 3 participants**
+>
+> **Two participants:**
+> 1. Open the demo on two devices. On each, pick a different user id (e.g. `alice` on device A, `bob` on device B).
+> 2. On device A, place a call to `bob`.
+> 3. Device B gets an incoming-call banner — accept it.
+> 4. Within a couple of seconds both devices should show the other participant's live video.
+>
+> **Three participants:**
+> 1. Open the demo on a third device and pick a third id (e.g. `carol`).
+> 2. On device A, place a call to both `bob` and `carol` at once.
+> 3. Accept on device B and device C independently — any order, any pace; they don't need to accept together.
+> 4. Once both have joined, all three devices should show the other two participants' video — a full mesh of 3 peer connections (see [Multiparty architecture](#multiparty-architecture)).
 
 ## Quick start
 

@@ -2,7 +2,7 @@ import { CallBack, CallProcessSignaling, RTCExchangeDataType } from "../../core/
 import { FirebaseOptions, initializeApp } from "firebase/app";
 import {
     getFirestore, Firestore, doc, setDoc, getDoc, addDoc, collection, updateDoc,
-    arrayUnion, onSnapshot, deleteDoc, query, where,
+    arrayUnion, onSnapshot, deleteDoc, query, where, runTransaction,
 } from "firebase/firestore";
 import { Observable } from "rxjs";
 import { Logger, LogLevel } from "../../shared/utils/logger";
@@ -34,15 +34,23 @@ export class FirebaseCallProcess implements CallProcessSignaling {
             return false;
         }
         const lockRef = doc(this.db, "rooms", roomId, "lock", "mutex");
-        const lockDoc = await getDoc(lockRef);
-        if (lockDoc.exists()) {
-            return false;
-        }
-        // Nobody holds the mutex yet — try to claim it exclusively.
+        // Read-then-write inside a transaction so two concurrent callers can't
+        // both observe an absent lock and both believe they claimed it — one
+        // of the transactions is retried by Firestore once the other commits,
+        // and re-reads the now-existing document.
         try {
-            await setDoc(lockRef, { participantId, timestamp: Date.now() }, { merge: false });
-            this.hasAcquiredLock = true;
-            return true;
+            const acquired = await runTransaction(this.db, async transaction => {
+                const lockDoc = await transaction.get(lockRef);
+                if (lockDoc.exists()) {
+                    return false;
+                }
+                transaction.set(lockRef, { participantId, timestamp: Date.now() });
+                return true;
+            });
+            if (acquired) {
+                this.hasAcquiredLock = true;
+            }
+            return acquired;
         } catch {
             return false;
         }
@@ -84,10 +92,15 @@ export class FirebaseCallProcess implements CallProcessSignaling {
 
     listenForLockRelease(roomId: string, participantId: string, action: () => void): void {
         const lockRef = doc(this.db, "rooms", roomId, "lock", "mutex");
-        onSnapshot(lockRef, async lockDoc => {
+        // One-shot: this participant only needs to grab the mutex once to run
+        // their own join action. Left attached, this snapshot listener would
+        // fire again the moment it deletes the lock document itself below,
+        // re-acquiring it and re-running `action()` a second time.
+        const unsubscribe = onSnapshot(lockRef, async lockDoc => {
             if (!lockDoc.exists() && !this.hasAcquiredLock) {
                 const acquired = await this.acquireLock(roomId, participantId);
                 if (acquired) {
+                    unsubscribe();
                     this.logger.info('Signaling lock acquired', { roomId, participantId });
                     try {
                         action();
@@ -123,16 +136,22 @@ export class FirebaseCallProcess implements CallProcessSignaling {
         callBack: CallBack,
     ): Promise<RTCSessionDescriptionInit | any> {
         this.logger.debug('onReadOfferOrAnswerOrIce', { path, idUser, participantId, type });
+        // An offer and an answer are each expected exactly once per negotiation;
+        // ICE candidates trickle in repeatedly and must keep being delivered.
+        const singleShot = type !== RTCExchangeDataType.ICE;
         return new Promise(resolve => {
             const payloadCollection = collection(this.db, "rooms", path, "sdp", type, idUser);
             const payloadQuery = query(payloadCollection, where("issuer", "==", participantId));
-            onSnapshot(payloadQuery, snapshot => {
+            const unsubscribe = onSnapshot(payloadQuery, snapshot => {
                 snapshot.docChanges().forEach(change => {
                     if (change.type === "added") {
                         this.logger.debug('Signaling payload received', { type, participantId });
                         const payload = change.doc.data()![type];
                         callBack.do(payload);
                         resolve(payload);
+                        if (singleShot) {
+                            unsubscribe();
+                        }
                     }
                 });
             });
@@ -154,6 +173,7 @@ export class FirebaseCallProcess implements CallProcessSignaling {
     async releaseLock(roomId: string): Promise<void> {
         const lockRef = doc(this.db, "rooms", roomId, "lock", "mutex");
         await deleteDoc(lockRef);
+        this.hasAcquiredLock = false;
     }
 
     async writeOfferOrAnswerOrIce(path: string, idUser: string, type: RTCExchangeDataType, element: any): Promise<void> {
