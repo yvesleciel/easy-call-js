@@ -1,6 +1,6 @@
 {
   "name": "easy-call-js",
-  "version": "2.0.2",
+  "version": "2.0.3",
   "description": "makes it easy to add video calls easily and JavaScript-enabled, regardless of the framework",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -14,7 +14,7 @@
       "default": "./dist/dom/index.js"
     },
     "./angular": {
-      "types": "./dist/angular/types/easy-call-js-angular.d.ts",
+      "types": "./dist/angular/index.d.ts",
       "default": "./dist/angular/fesm2022/easy-call-js-angular.mjs"
     }
   },
