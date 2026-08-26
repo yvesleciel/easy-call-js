@@ -1,22 +1,30 @@
-// Exports principaux
-export { CallProcessService } from './main/services/call-process.service';
-export { CallServiceFactory } from './main/core/call/factory/call-service.factory';
-export { ConfigService } from './main/core/call/app-config/call-config';
-export { Logger, LogLevel } from './main/shared/utils/logger';
+// Core service + factory
+export { CallProcessService } from './services/call-process.service';
+export { CallServiceFactory } from './core/call/factory/call-service.factory';
+export { ConfigService, mergeCallConfig } from './core/call/app-config/call-config';
+export { Logger, LogLevel } from './shared/utils/logger';
 
-// Exports des types
-export type { CallParam, TriggerCallParam } from './main/core/call/validators/call-validators';
-export type { CallConfig, RTCConfig, MediaConfig, UIConfig } from './main/core/call/app-config/call-config';
-export type { ICallProcessService } from './main/core/call/driving/call-process';
+// Bundled browser adapters (usable directly or through provideEasyCall / CallServiceFactory)
+export { MediaService } from './infrastructure/media/media.service.adapter';
+export { WebRTCService } from './infrastructure/webrtc/webrtc.service.adapter';
 
-// Exports des erreurs
-export * from './main/shared/errors/call-error';
+// Public types
+export type { CallConfig, RTCConfig, MediaConfig } from './core/call/app-config/call-config';
+export type { ICallProcessService, TakeCallOptions } from './core/call/driving/call-process';
+export type { CallEvent } from './core/call/driving/call-events';
 
-// Exports des états
-export { CallState, CallStateMachine } from './main/core/call/state/call-state-machine';
+// Errors
+export * from './shared/errors/call-error';
 
-// Export de la classe d'origine pour compatibilité
-export { CallProcessSignaling, RTCExchangeDataType } from './main/core/call/driven/call-process-signaling';
-export type { CallBack, PeerConnect } from './main/core/call/driven/call-process-signaling';
+// State machine
+export { CallState, CallStateMachine } from './core/call/state/call-state-machine';
 
-export {FirebaseCallProcess} from './main/infrastructure/signaling/FirebaseCallProcess'
+// Secondary ports (for adapter implementers)
+export { CallProcessSignaling, RTCExchangeDataType } from './core/call/driven/call-process-signaling';
+export type { CallBack, PeerConnect } from './core/call/driven/call-process-signaling';
+export type { IMediaService } from './core/call/driven/media.service';
+export type { IWebRTCService } from './core/call/driven/webrtc.service';
+
+// Bundled Firebase adapter
+export { FirebaseCallProcess } from './infrastructure/signaling/FirebaseCallProcess';
+
