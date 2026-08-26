@@ -20,7 +20,6 @@ npm install easy-call-js
 
 ## Table of contents
 
-**Sell**
 [Why easy-call-js](#why-easy-call-js) · [Demo](#demo) · [Quick start](#quick-start) · [What's new in v2](#whats-new-in-v2)
 
 **Understand**
@@ -33,8 +32,6 @@ npm install easy-call-js
 [API reference](#api-reference) · [Events reference](#events-reference) · [Browser support](#browser-support) · [Limitations](#limitations) · [Security](#security) · [Migration](#migration) · [Contributing](#contributing) · [License](#license)
 
 ---
-
-# Sell
 
 ## Why easy-call-js
 
